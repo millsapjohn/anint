@@ -6,23 +6,35 @@ import geopandas as gpd
 import pandas as pd
 import shapely
 import progressbar
-# import argparse
+import pathlib
+import argparse
 
 def main():
-    # TODO set up argparse
-    grid_space = float(sys.argv[4])
-    power = float(sys.argv[5])
-    radius = float(sys.argv[6])
-    min_points = int(sys.argv[7])
-    max_points = int(sys.argv[8])
+    # parse arguments from the command line
+    # TODO add file extension checking for shapefiles
+    parser = argparse.ArgumentParser(description='anisotropic inverse-distance weighted point interpolation')
+    parser.add_argument('bathy', type=pathlib.Path, help='Shapefile of existing bathymetry layer')
+    parser.add_argument('mask', type=pathlib.Path, help='Shapefile of existing mask layer')
+    parser.add_argument('cl', type=pathlib.Path, help='Shapefile of existing centerline layer')
+    parser.add_argument('space', type=float, help='desired grid spacing')
+    parser.add_argument('power', type=float, help='power to be used in IDW calculation')
+    parser.add_argument('radius', type=float, help='default search radius for nearby points')
+    parser.add_argument('min_points', type=int, help='minimum number of points to be used in IDW calculation')
+    parser.add_argument('max_points', type=int, help='maximum number of points to be used in IDW calculation')
+    args = parser.parse_args()
+    grid_space = args.space
+    power = args.power
+    radius = args.radius
+    min_points = args.min_points
+    max_points = args.max_points
 
     # get data source and feature layer for bathymetry, mask (outline), and centerline
     print('loading layers')
-    bathy_lyr = gpd.read_file(sys.argv[1])
+    bathy_lyr = gpd.read_file(args.bathy)
     bathy_lyr.name = 'bathymetry layer'
-    mask_lyr = gpd.read_file(sys.argv[2])
+    mask_lyr = gpd.read_file(args.mask)
     mask_lyr.name = 'mask layer'
-    cl_lyr = gpd.read_file(sys.argv[3])
+    cl_lyr = gpd.read_file(args.cl)
     cl_lyr.name = 'centerline layer'
     
     # check that centerline, mask layers only have one feature
@@ -33,7 +45,7 @@ def main():
     # check that bathy points have z value
     for index, row in bathy_lyr.iterrows():
         if row['geometry'].has_z != True:
-            sys.exit("one or more features in point layer does not contain z value")
+            sys.exit("one or more features in point layer does not contain a z value")
         else:
             pass
 
@@ -50,7 +62,7 @@ def main():
         mask_lyr['geometry'].iloc[0] = mask_geom
 
     # compare CRS for the three layers - need to be in the same CRS
-    print('checking layer CRSs')
+    print('checking layer CRS compatibility')
     bathy_crs_code = bathy_lyr.crs.to_epsg(min_confidence=20)
     mask_crs_code = mask_lyr.crs.to_epsg(min_confidence=20)
     cl_crs_code = cl_lyr.crs.to_epsg(min_confidence=20)
@@ -84,9 +96,9 @@ def main():
     grid_lyr = gpd.GeoDataFrame(grid_point_list, geometry='geometry', crs=bathy_lyr.crs)
 
     # clip grid layer
+    # TODO figure out a working method to clip when polygon has holes
     print('clipping grid layer')
     new_grid_lyr = gpd.clip(grid_lyr, mask_lyr)
-    new_grid_lyr.to_file('testgrid.shp')
 
     # calculate side, m value, d value for grid layer, add to grid layer fields
     print('assigning side value to grid points')
@@ -108,6 +120,7 @@ def main():
     print('processing complete')
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
+# TODO still looking for speed improvements...
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
     point_list = [None] * len(grid_lyr)
     x_coords = [None] * len(grid_lyr)
