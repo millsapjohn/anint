@@ -85,7 +85,8 @@ def main():
 
     # clip grid layer
     print('clipping grid layer')
-    gpd.clip(grid_lyr, mask_lyr)
+    new_grid_lyr = gpd.clip(grid_lyr, mask_lyr)
+    new_grid_lyr.to_file('testgrid.shp')
 
     # calculate side, m value, d value for grid layer, add to grid layer fields
     print('assigning side value to grid points')
@@ -101,23 +102,26 @@ def main():
 
     # perform the anisotropic IDW calculation
     print('\nperforming IDW interpolation on anisotropic coordinates')
-    new_grid_lyr = invDistWeight(grid_lyr, md_bathy_lyr, md_grid_lyr, power, radius, min_points, max_points, bathy_index)
+    final_grid_lyr = invDistWeight(grid_lyr, md_bathy_lyr, md_grid_lyr, power, radius, min_points, max_points, bathy_index)
     print('\nexporting grid points to Shapefile')
-    # TODO check if grid layer already exists, overwrite
-    new_grid_lyr.to_file("grid_points.shp")
+    final_grid_lyr.to_file("grid_points.shp")
     print('processing complete')
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
+    point_list = [None] * len(grid_lyr)
+    x_coords = [None] * len(grid_lyr)
+    y_coords = [None] * len(grid_lyr)
     bar = progressbar.ProgressBar(min_value=0).start()
-    # TODO rather than reference multiple dataframes at each step, initalize a bunch of Series and append
-    # at the end
     for index, row in grid_md_lyr.iterrows():
-        x_coord = grid_lyr.at[index, 'geometry'].x
-        y_coord = grid_lyr.at[index, 'geometry'].y
-        pt = row['geometry']
+        x_coords[index] = grid_lyr.at[index, 'geometry'].x
+        y_coords[index] = grid_lyr.at[index, 'geometry'].y
+        point_list[index] = row['geometry']
+    for i in range(len(point_list) - 1):
+        if shapely.is_empty(point_list[i]) == True:
+            continue
         # generate a polygon corresponding to the search radius specified
-        buff = shapely.buffer(pt, radius, quad_segs=64)
+        buff = shapely.buffer(point_list[i], radius, quad_segs=64)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
         possible_matches = bathy_md_lyr.iloc[possible_matches_index]
@@ -125,21 +129,18 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         precise_matches = possible_matches[possible_matches.intersects(buff)]
         # if total matches less than specified minimum, expand search radius until criteria is met
         if len(precise_matches) < min_points:
-            i = 1
+            j = 1
             while len(precise_matches) < min_points:
-                new_rad = radius + (i * 5)
-                buff = shapely.buffer(pt, new_rad, quad_segs=64)
+                new_rad = radius + (j * 5)
+                buff = shapely.buffer(point_list[i], new_rad, quad_segs=64)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
                 precise_matches = possible_matches[possible_matches.intersects(buff)]
-                i += 1
+                j += 1
         # putting this here because I think this minimizes the number of duplicate operations...
-        match_pts = gpd.GeoDataFrame(precise_matches)
         match_dist_dict = {}
-        for index2, row2 in match_pts.iterrows():
-            dist = row2['geometry'].distance(pt)
-            temp_dict = {dist : index2}
-            match_dist_dict.update(temp_dict)
+        for index, row in precise_matches.iterrows():
+            match_dist_dict.update({row['geometry'].distance(point_list[i]) : index})
         # this has to come second in case expanding the search radius above grabs a ton of points
         if len(match_dist_dict) > max_points:
             extra_rows = len(match_dist_dict) - max_points
@@ -151,13 +152,11 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         numerator = 0
         denominator = 0
         # iterate through the range of points within the search radius
-        point_list = list(match_dist_dict.values())
-        dist_list = list(match_dist_dict.keys())
-        for m in range(len(point_list) - 1):
-            # get the bathy point index
-            point_no = point_list[m]
+        matched_point_list = tuple(match_dist_dict.values())
+        dist_list = tuple(match_dist_dict.keys())
+        for m in range(len(matched_point_list) - 1):
             # get the z value from the indexed point
-            bathy_z_val = bathy_md_lyr.at[point_no, 'geometry'].z
+            bathy_z_val = bathy_md_lyr.at[matched_point_list[m], 'geometry'].z
             # calculate numerator and denominator values for that point
             temp_num = bathy_z_val / (dist_list[m] ** power)
             temp_den = 1 / (dist_list[m] ** power)
@@ -168,14 +167,15 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             grid_z_val = 0.00
         else:
             grid_z_val = numerator / denominator
-        grid_lyr.at[index, 'geometry'] = shapely.Point(x_coord, y_coord, grid_z_val)
-        bar.update(index)
+        point_list[i] = shapely.Point(x_coords[i], y_coords[i], grid_z_val)
+        bar.update(i)
 
+    grid_lyr = grid_lyr.set_geometry(point_list)
     return(grid_lyr)
 
 # function to create new gdf from m, d values
 def mdPointLayer(gdf):
-    point_list = []
+    point_list = [None] * len(gdf)
     for index, row in gdf.iterrows():
         m_val = row['m_val']
         d_val = row['d_val']
@@ -183,8 +183,7 @@ def mdPointLayer(gdf):
             z_val = row['geometry'].z
         else:
             z_val = 0.00
-        pt = shapely.Point(m_val, d_val, z_val)
-        point_list.append({'geometry' : pt})
+        point_list[index] = ({'geometry' : shapely.Point(m_val, d_val, z_val)})
     new_layer = gpd.GeoDataFrame(point_list, geometry='geometry')
     return new_layer
 
