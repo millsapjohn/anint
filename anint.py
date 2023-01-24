@@ -11,11 +11,10 @@ import argparse
 
 def main():
     # parse arguments from the command line
-    # TODO add file extension checking for shapefiles
     parser = argparse.ArgumentParser(description='anisotropic inverse-distance weighted point interpolation')
-    parser.add_argument('bathy', type=pathlib.Path, help='Shapefile of existing bathymetry layer')
-    parser.add_argument('mask', type=pathlib.Path, help='Shapefile of existing mask layer')
-    parser.add_argument('cl', type=pathlib.Path, help='Shapefile of existing centerline layer')
+    parser.add_argument('bathy', type=fileCheck, help='Shapefile of existing bathymetry layer')
+    parser.add_argument('mask', type=fileCheck, help='Shapefile of existing mask layer')
+    parser.add_argument('cl', type=fileCheck, help='Shapefile of existing centerline layer')
     parser.add_argument('space', type=float, help='desired grid spacing')
     parser.add_argument('power', type=float, help='power to be used in IDW calculation')
     parser.add_argument('radius', type=float, help='default search radius for nearby points')
@@ -55,12 +54,6 @@ def main():
     mask_lyr = polyTypeCheck(mask_lyr)
     featureTypeCheck(cl_lyr, 'LineString')
 
-    # convert mask layer geometry to multipolygon
-    mask_geom = mask_lyr['geometry'].iloc[0]
-    if isinstance(mask_geom, shapely.Polygon):
-        mask_geom = shapely.MultiPolygon([mask_geom])
-        mask_lyr['geometry'].iloc[0] = mask_geom
-
     # compare CRS for the three layers - need to be in the same CRS
     print('checking layer CRS compatibility')
     bathy_crs_code = bathy_lyr.crs.to_epsg(min_confidence=20)
@@ -96,25 +89,24 @@ def main():
     grid_lyr = gpd.GeoDataFrame(grid_point_list, geometry='geometry', crs=bathy_lyr.crs)
 
     # clip grid layer
-    # TODO figure out a working method to clip when polygon has holes
     print('clipping grid layer')
-    new_grid_lyr = gpd.clip(grid_lyr, mask_lyr)
+    new_grid_lyr = multiClip(grid_lyr, mask_lyr)
 
     # calculate side, m value, d value for grid layer, add to grid layer fields
     print('assigning side value to grid points')
-    assignSide(grid_lyr, cl_lyr)
+    assignSide(new_grid_lyr, cl_lyr)
     print('\nassigning m, d values to grid points')
-    assignMDValues(grid_lyr, cl_lyr)
+    assignMDValues(new_grid_lyr, cl_lyr)
 
     # generate new bathy, grid layers with m, d coordinates
     print('\ngenerating new bathy, grid layers')
     md_bathy_lyr = mdPointLayer(bathy_lyr)
     bathy_index = md_bathy_lyr.sindex
-    md_grid_lyr = mdPointLayer(grid_lyr)
+    md_grid_lyr = mdPointLayer(new_grid_lyr)
 
     # perform the anisotropic IDW calculation
     print('\nperforming IDW interpolation on anisotropic coordinates')
-    final_grid_lyr = invDistWeight(grid_lyr, md_bathy_lyr, md_grid_lyr, power, radius, min_points, max_points, bathy_index)
+    final_grid_lyr = invDistWeight(new_grid_lyr, md_bathy_lyr, md_grid_lyr, power, radius, min_points, max_points, bathy_index)
     print('\nexporting grid points to Shapefile')
     final_grid_lyr.to_file("grid_points.shp")
     print('processing complete')
@@ -216,39 +208,60 @@ def featureTypeCheck(gdf, geom_type):
         else:
             pass
 
-# more complex function for polygons, as some polygon shapefiles come in as multilinestrings...
-# multilinestring shapefiles have to be manually converted to polygons with holes
+# function to check file extensions
+def fileCheck(file):
+    ext = os.path.splitext(file)[1][1:]
+    if ext != 'shp':
+        parser.error('files must be of type Shapefile')
+    return file
+
+# more complex typechecking function for polygons. Polygons with holes come in as multilinestrings, which have to
+# be converted to a series of polygons. Geopandas' clip function doesn't handle holes correctly.
 def polyTypeCheck(gdf):
     for index, row in gdf.iterrows():
         if row['geometry'].geom_type == 'Polygon':
             # length of layer is checked first, so if row 0 is correct, simply pass on the existing gdf
             new_mask_lyr = gdf
         elif row['geometry'].geom_type == 'MultiLineString':
-            inner_list = []
-            exploded = gdf.explode(index_parts=True)
-            for index, row in exploded.iterrows():
-                coord_list = shapely.get_coordinates(row['geometry']).tolist()
-                ring = shapely.linearrings(coord_list)
-                inner_list.append(ring)
-                polygon = shapely.polygons(inner_list[0], holes=inner_list[0:])
-                poly_list = []
-                poly_dict = {'geometry' : polygon}
-                poly_list.append(poly_dict)
-                new_mask_lyr = gpd.GeoDataFrame(poly_list, geometry='geometry', crs=gdf.crs)
+            poly_list = []
+            new_mask_lyr = gdf.explode(index_parts=True)
+            new_mask_lyr = new_mask_lyr.reset_index(drop = True)
+            for index, row in new_mask_lyr.iterrows():
+                poly = shapely.polygons(shapely.linearrings(shapely.get_coordinates(row['geometry']).tolist()))
+                poly_list.append(poly)
+            new_mask_lyr = new_mask_lyr.set_geometry(poly_list)
+            new_mask_lyr = new_mask_lyr.reset_index(drop = True)
         else:
             sys.exit('mask layer cannot be converted to polygons')
     return new_mask_lyr
 
+# more comprehensive clip function, since the geopandas clip function doesn't handle holes correctly. Row 0 is the
+# outside border, so all points outside that polygon will be removed. Any further rows are interior holes, so 
+# points within those polygons will be removed.
+def multiClip(point_lyr, mask_lyr):
+    point_lyr = point_lyr.clip(mask_lyr.at[0, 'geometry'])
+    drop_list = []
+    for index, row in mask_lyr.iterrows():
+        # don't want to remove all points within border polygon...
+        if index == 0:
+            continue
+        for index2, row2 in point_lyr.iterrows():
+            if shapely.contains(mask_lyr.at[index, 'geometry'], point_lyr.at[index2, 'geometry']) == True:
+                drop_list.append(index2)
+    # reset the index so other functions that assume row and index are the same don't get messed up
+    point_lyr = point_lyr.drop(drop_list)
+    point_lyr = point_lyr.reset_index(drop = True)
+
+    return point_lyr
+
 def assignSide(point_layer, line_layer):
     # create a list of all line coordinates to iterate over each segment
-    line_coords = []
-    for index, row in line_layer.iterrows():
-        for pt in list(row['geometry'].coords):
-            line_coords.append(shapely.Point(pt))
-    point_coords = []
-    for index, row in point_layer.iterrows():
-        for pt in list(row['geometry'].coords):
-            point_coords.append(shapely.Point(pt))
+    line_coords = [None] * len(list(line_layer.at[0, 'geometry'].coords))
+    for i in range(len(list(line_layer.at[0, 'geometry'].coords)) - 1):
+        line_coords[i] = shapely.Point(list(line_layer.at[0, 'geometry'].coords)[i])
+    point_coords = [None] * len(point_layer)
+    for i in range(len(point_layer) - 1):
+        point_coords[i] = shapely.Point((point_layer.at[i, 'geometry']))
     bar = progressbar.ProgressBar(min_value=0).start()
     side_values = pd.Series(dtype='int64')
     for i in range(len(point_coords) - 1):
