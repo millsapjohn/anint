@@ -39,7 +39,4 @@ All files must be Shapefiles at this time. Future releases will expand to other 
 All files must be in the same CRS. Be sure to take into account the distance units of the chosen CRS when
 specifying search radius(i.e., feet vs. degrees).</br>
 
-At this time, there appears to be speed issues when processing large numbers of points. Future releases will
-address these concerns.</br>
-
 At some point this will be developed into a QGIS plugin.</br>
