@@ -1,19 +1,28 @@
-"""anint.py - anisotropic, inverse-distance weighted point interpolation.
-Copyright (C) 2023 John M. Millsap
+"""
+/***************************************************************************
+ anint
+                                 A QGIS plugin
+ This plugin performs anisotropic inverse-distance weighted interpolation
+of bathymetric points, generating a regularly-spaced grid.
+                              -------------------
+        begin                : 2023-01-25
+        copyright            : (C) 2023 by John Millsap
+        email                : jmillsapengineer@gmail.com
+ ***************************************************************************/
 
-This program is free software; you can redistribute it and/or
-modify it under the terms of the GNU General Public License
-as published by the Free Software Foundation; either version 3
-of the License, or (at your option), any later version.
+/***************************************************************************
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU General Public License as published by  *
+ *   the Free Software Foundation; either version 2 of the License, or     *
+ *   (at your option) any later version.                                   *
+ *                                                                         *
+ ***************************************************************************/
+"""
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the 
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License 
-along with this program; if not, write to the Free Software 
-Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  03110-1301, USA."""
+__author__ = 'John Millsap'
+__date__ = '2023-01-25'
+__copyright__ = '(C) 2023 by John Millsap'
 
 import sys
 import os
@@ -129,7 +138,6 @@ def main():
     print('processing complete')
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
-# TODO still looking for speed improvements...
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
     point_list = [None] * len(grid_lyr)
     x_coords = [None] * len(grid_lyr)
