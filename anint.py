@@ -46,12 +46,14 @@ def main():
     parser.add_argument('radius', type=float, help='default search radius for nearby points')
     parser.add_argument('min_points', type=int, help='minimum number of points to be used in IDW calculation')
     parser.add_argument('max_points', type=int, help='maximum number of points to be used in IDW calculation')
+    parser.add_argument('output', type=fileCheck, help='output Shapefile')
     args = parser.parse_args()
     grid_space = args.space
     power = args.power
     radius = args.radius
     min_points = args.min_points
     max_points = args.max_points
+    output = args.output
 
     # get data source and feature layer for bathymetry, mask (outline), and centerline
     print('loading layers')
@@ -90,11 +92,11 @@ def main():
     if bathy_crs_code != mask_crs_code or bathy_crs_code != cl_crs_code:
         sys.exit("mismatched layer CRS")
 
-    # calculate side, m value, d value for bathy layer, add to bathymetry layer fields
-    print('assigning side value to bathymetry points')
-    assignSide(bathy_lyr, cl_lyr)
+    # calculate m value, d value for bathy layer, add to bathymetry layer fields
     print('\nassigning m, d values to bathymetry points')
     assignMDValues(bathy_lyr, cl_lyr)
+    bathy_lyr.to_file('bathy_test3.shp')
+    sys.exit()
 
     # get bounding box of mask layer - will clip later
     b_box = mask_lyr.total_bounds
@@ -134,7 +136,7 @@ def main():
     print('\nperforming IDW interpolation on anisotropic coordinates')
     final_grid_lyr = invDistWeight(new_grid_lyr, md_bathy_lyr, md_grid_lyr, power, radius, min_points, max_points, bathy_index)
     print('\nexporting grid points to Shapefile')
-    final_grid_lyr.to_file("grid_points.shp")
+    final_grid_lyr.to_file(output)
     print('processing complete')
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
@@ -151,7 +153,8 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         if shapely.is_empty(point_list[i]) == True:
             continue
         # generate a polygon corresponding to the search radius specified
-        buff = shapely.buffer(point_list[i], radius, quad_segs=64)
+        buff_coords = ((x_coords[index] - radius, y_coords[index] + (radius / 2)), (x_coords[index] - radius, y_coords[index] - (radius / 2)), (x_coords[index] + radius, y_coords[index] + (radius / 2)), (x_coords[index] + radius, y_coords[index] - (radius / 2)))
+        buff = shapely.Polygon(buff_coords)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
         possible_matches = bathy_md_lyr.iloc[possible_matches_index]
@@ -162,7 +165,8 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             j = 1
             while len(precise_matches) < min_points:
                 new_rad = radius + (j * 5)
-                buff = shapely.buffer(point_list[i], new_rad, quad_segs=64)
+                buff_coords = ((x_coords[index] - new_rad, y_coords[index] + (new_rad / 2)), (x_coords[index] - new_rad, y_coords[index] - (new_rad / 2)), (x_coords[index] + new_rad, y_coords[index] + (new_rad / 2)), (x_coords[index] + new_rad, y_coords[index] - (new_rad / 2)))
+                buff = shapely.Polygon(buff_coords)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
                 precise_matches = possible_matches[possible_matches.intersects(buff)]
@@ -279,67 +283,55 @@ def multiClip(point_lyr, mask_lyr):
 
     return point_lyr
 
-def assignSide(point_layer, line_layer):
-    # create a list of all line coordinates to iterate over each segment
-    line_coords = [None] * len(list(line_layer.at[0, 'geometry'].coords))
-    for i in range(len(list(line_layer.at[0, 'geometry'].coords)) - 1):
-        line_coords[i] = shapely.Point(list(line_layer.at[0, 'geometry'].coords)[i])
-    point_coords = [None] * len(point_layer)
-    for i in range(len(point_layer) - 1):
-        point_coords[i] = shapely.Point((point_layer.at[i, 'geometry']))
-    bar = progressbar.ProgressBar(min_value=0).start()
-    side_values = pd.Series(dtype='int64')
-    for i in range(len(point_coords) - 1):
-        for j in range(len(line_coords) - 2):
-            # creating a line segment out of only two points
-            temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
-            temp_area = signedTriangleArea(temp_line, point_coords[i])
-            # set the initial area value on the first segment
-            if i == 0:
-                area = temp_area
-            # if abs area is smaller, replace. The assumption here is that the segment to which each point is
-            # closest (perpendicular distance) is the "correct" one. On a complicated line string a point could
-            # be on different sides of different segments.
-            if abs(temp_area) < abs(area):
-                area = temp_area
-        if area > 0:
-            side = 0
-        else:
-            side = 1
-        side_values = pd.concat([side_values, pd.Series(index=[i], data=[side])])
-        bar.update(i)
-
-    point_layer['side'] = side_values
-    return point_layer
-
+# the "signed triangle area" formula returns an area value that is < 0 when the test point is on the
+# right side of the line, > 0 when on the left. This determines the "sidedness" of each point.
+# smaller absolute value = closer to the line. 
 def signedTriangleArea(test_line, test_point):
-    # the "signed triangle area" formula returns an area value that is < 0 when the test point is on the
-    # right side of the line, > 0 when on the left. This determines the "sidedness" of each point.
-    # smaller absolute value = closer to the line. 
     vertex_1 = shapely.Point(test_line.coords[0])
     vertex_2 = shapely.Point(test_line.coords[1])
     test_point = shapely.Point(test_point)
     area = ((vertex_2.x - vertex_1.x) - (test_point.y - vertex_2.y)) - ((test_point.x - vertex_2.x) * (vertex_2.y - vertex_1.y))
 
     return area
-
+# assigning m (distance along centerline) and d (distance to centerline) for each point in a layer
+# uses the signedTriangleArea formula above
 def assignMDValues(point_layer, cl_layer):
     m_values = pd.Series(dtype='float64')
     d_values = pd.Series(dtype='float64')
+    side_values = pd.Series(dtype='object')
+    line_coords = [None] * len(list(cl_layer.at[0, 'geometry'].coords))
+    for i in range(len(list(cl_layer.at[0, 'geometry'].coords)) - 1):
+        line_coords[i] = shapely.Point(list(cl_layer.at[0, 'geometry'].coords)[i])
     cl_string = shapely.LineString(cl_layer.at[0, 'geometry'])
     bar = progressbar.ProgressBar(min_value=0).start()
     for i in range(len(point_layer) - 1):
         p = shapely.Point(point_layer.at[i, 'geometry'])
+        for j in range(len(line_coords) - 2):
+            temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
+            # TODO I think the problem is snapping to vertices when out of range.
+            # Need to find a way to fix that algorithmically.
+            temp_m = temp_line.project(p)
+            temp_proj = temp_line.interpolate(temp_m)
+            temp_d = p.distance(temp_proj)
+            if j == 0:
+                d_val = temp_d
+                area = signedTriangleArea(temp_line, p)
+            if temp_d < d_val:
+                d_val = temp_d
+                area = signedTriangleArea(temp_line, p)
         m_val = cl_string.project(p)
-        proj_point = cl_string.interpolate(m_val)
-        d_val = p.distance(proj_point)
-        if point_layer.at[i, 'side'] == 0:
+        if area < 0:
             d_val = d_val * -1
+            side = 'right'
+        else:
+            side = 'left'
         m_values = pd.concat([m_values, pd.Series(index=[i], data=[m_val])])
         d_values = pd.concat([d_values, pd.Series(index=[i], data=[d_val])])
+        side_values = pd.concat([side_values, pd.Series(index = [i], data=[side])])
         bar.update(i)
     point_layer['m_val'] = m_values
     point_layer['d_val'] = d_values
+    point_layer['side'] = side_values
 
     return point_layer
 
