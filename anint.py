@@ -21,7 +21,7 @@ of bathymetric points, generating a regularly-spaced grid.
 """
 
 __author__ = 'John Millsap'
-__date__ = '2023-01-25'
+__date__ = '2023-02-03'
 __copyright__ = '(C) 2023 by John Millsap'
 
 import sys
@@ -298,7 +298,10 @@ def signedTriangleArea(test_line, test_point):
 def assignMDValues(point_layer, cl_layer):
     m_values = pd.Series(dtype='float64')
     d_values = pd.Series(dtype='float64')
+    # TODO remove the following three when finished debugging
     side_values = pd.Series(dtype='object')
+    area_values = pd.Series(dtype='float64')
+    start_verts = pd.Series(dtype='float64')
     line_coords = [None] * len(list(cl_layer.at[0, 'geometry'].coords))
     for i in range(len(list(cl_layer.at[0, 'geometry'].coords)) - 1):
         line_coords[i] = shapely.Point(list(cl_layer.at[0, 'geometry'].coords)[i])
@@ -308,17 +311,22 @@ def assignMDValues(point_layer, cl_layer):
         p = shapely.Point(point_layer.at[i, 'geometry'])
         for j in range(len(line_coords) - 2):
             temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
-            # TODO I think the problem is snapping to vertices when out of range.
-            # Need to find a way to fix that algorithmically.
-            temp_m = temp_line.project(p)
-            temp_proj = temp_line.interpolate(temp_m)
-            temp_d = p.distance(temp_proj)
-            if j == 0:
-                d_val = temp_d
+            # checks whether the projected point is equal to the start vertex
+            if temp_line.project(p) == 0:
+                continue
+            # checks whether the projected point is equal to the end vertex
+            elif temp_line.project(p) == temp_line.project(line_coords[j + 1]):
+                continue
+            # if neither of the above is true, we should be able to get a projected point
+            else:
+                temp_m = temp_line.project(p)
+                temp_proj = temp_line.interpolate(temp_proj)
+                d_val = p.distance(temp_proj)
                 area = signedTriangleArea(temp_line, p)
-            if temp_d < d_val:
-                d_val = temp_d
-                area = signedTriangleArea(temp_line, p)
+        # if we get to the end of the line segments without getting a projected point, just use the 
+        # nearest vertex
+        if not 'd_val' in locals():
+            d_val, area = minAvgDist(line_coords, p)
         m_val = cl_string.project(p)
         if area < 0:
             d_val = d_val * -1
@@ -328,12 +336,22 @@ def assignMDValues(point_layer, cl_layer):
         m_values = pd.concat([m_values, pd.Series(index=[i], data=[m_val])])
         d_values = pd.concat([d_values, pd.Series(index=[i], data=[d_val])])
         side_values = pd.concat([side_values, pd.Series(index = [i], data=[side])])
+        area_values = pd.concat([area_values, pd.Series(index = [i], data=[area])])
+        start_verts = pd.concat([start_verts, pd.Series(index = [i], data=[start_vert])])
         bar.update(i)
     point_layer['m_val'] = m_values
     point_layer['d_val'] = d_values
+    # TODO remove the following three when finished debugging
     point_layer['side'] = side_values
+    point_layer['area'] = area_values
+    point_layer['start_vert'] = start_verts
 
     return point_layer
+
+# TODO this function calculates the distance to the nearest vertex if no perpendicular projection
+# is available for that point (i.e., convex side of an intersection)
+def minAvgDist(line_coords, point):
+    pass
 
 if __name__ == "__main__":
     main()
