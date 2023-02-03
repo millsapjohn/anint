@@ -31,6 +31,8 @@ max_points: maximum number of points to be used in IDW calculation(if not met, f
     python anint.py 22024_pts.shp 22024_mask.shp 22024_cl.shp 50 2 50 3 20
 
 ## Notes
+Centerline must extend beyond the first/last points in the bathymetry layer for accurate results.</br>
+
 Mask layer will be used to clip grid points - no points will be generated outside mask. Works with polygons
 containing holes.</br>
 
