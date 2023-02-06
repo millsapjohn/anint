@@ -72,7 +72,7 @@ def main():
     # check that bathy points have z value
     for index, row in bathy_lyr.iterrows():
         if row['geometry'].has_z != True:
-            sys.exit("one or more features in point layer does not contain a z value")
+            sys.exit("one or more features in bathymetry layer does not contain a z value")
         else:
             pass
 
@@ -92,9 +92,22 @@ def main():
     if bathy_crs_code != mask_crs_code or bathy_crs_code != cl_crs_code:
         sys.exit("mismatched layer CRS")
 
+    # convert cl layer to single strings (if multistring), trim where it intersects mask layer
+    new_cl_lyr = cl_lyr.explode()
+    cl_list = []
+    for i, row in new_cl_lyr.iterrows():
+        cl_list[i] = row.geometry
+    cl_list = clTrim(cl_list)
+
+    # convert list back to a single multistring after trimming (for calculating m values)
+    cl_feat = shapely.union_all([cl_list])
+
+    #create bounding boxes for assigning side
+    boxes_left, boxes_right = segmentBoxes(cl_list, mask_lyr)
+
     # calculate m value, d value for bathy layer, add to bathymetry layer fields
     print('\nassigning m, d values to bathymetry points')
-    assignMDValues(bathy_lyr, cl_lyr)
+    assignMDValues(bathy_lyr, cl_lyr, boxes_left, boxes_right)
     bathy_lyr.to_file('bathy_test3.shp')
     sys.exit()
 
@@ -121,10 +134,8 @@ def main():
     new_grid_lyr = multiClip(grid_lyr, mask_lyr)
 
     # calculate side, m value, d value for grid layer, add to grid layer fields
-    print('assigning side value to grid points')
-    assignSide(new_grid_lyr, cl_lyr)
     print('\nassigning m, d values to grid points')
-    assignMDValues(new_grid_lyr, cl_lyr)
+    assignMDValues(new_grid_lyr, cl_lyr, boxes_left, boxes_right)
 
     # generate new bathy, grid layers with m, d coordinates
     print('\ngenerating new bathy, grid layers')
@@ -138,6 +149,51 @@ def main():
     print('\nexporting grid points to Shapefile')
     final_grid_lyr.to_file(output)
     print('processing complete')
+
+# creates bounding boxes of each line segment extended to the extent of the mask layer, for identifying
+# which points go with which segment
+def segmentBoxes(cl_list, mask_lyr):
+    box_list_left = [None] * (len(cl_list) / 2)
+    box_list_right = [None] * (len(cl_list) / 2)
+    for i in range(len(cl_list) - 1):
+        j = 1 
+        k = 1
+        seg = cl_list[i]
+        offset_left = seg.offset_curve(5)
+        offset_right = seg.offset_curve(-5)
+        while shapely.contains(mask_lyr.at[0, 'geometry'], offset_left) == True:
+            offset_left = offset_left.offset_curve(j * 5)
+            j += 1
+            if shapely.intersects(mask_lyr.at[0, 'geometry'], offset_left) == True:
+                while shapely.intersects(mask_lyr.at[0, 'geometry'], offset_left) == True:
+                    offset_left = offset_left.offset_curve(j * 5)
+                    j += 1
+        poly_left = shapely.Polygon([seg.coords[0], seg.coords[1], offset_left.coords[1], offset_left.coords[0]])
+        box_list_left[i] = poly_left
+        while shapely.contains(mask_lyr.at[0, 'geometry'], offset_right) == True:
+            offset_right = offset_right.offset_curve(k * -5)
+            k += 1
+            if shapely.intersects(mask_lyr.at[0, 'geometry'], offset_right) == True:
+                while shapely.intersects(mask_lyr.at[0, 'geometry'], offset_right) == True:
+                    offset_right = offset_right.offset_curve(k * -5)
+                    k += 1
+        poly_right = shapely.Polygon([seg.coords[0], seg.coords[1], offset_right.coords[1], offset_right.coords[0]])
+        box_list_right[i] = poly_right
+    return box_list_left, box_list_right
+
+# trims CL segments to extents of mask layer
+def clTrim(cl_list, mask_lyr):
+    for i in range(len(cl_list) - 1):
+        seg = cl_list[i]
+        if shapely.crosses(mask_lyr.at[0, 'geometry'], seg) == True:
+            int_point = seg.intersection(mask_lyr.at[0, 'geometry'])
+            seg_1 = shapely.LineString(int_point, seg,coords[0])
+            seg_2 = shapely.LineString(int_point, seg.coords[1])
+            if shapely.contains(mask_lyr.at[0, 'geometry'], seg_1) == True:
+                cl_list[i] = seg_1
+            else:
+                cl_list[i] = seg_2
+    return cl_list
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
@@ -295,13 +351,14 @@ def signedTriangleArea(test_line, test_point):
     return area
 # assigning m (distance along centerline) and d (distance to centerline) for each point in a layer
 # uses the signedTriangleArea formula above
-def assignMDValues(point_layer, cl_layer):
+# TODO rewrite based on boxes approach
+def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right):
     m_values = pd.Series(dtype='float64')
     d_values = pd.Series(dtype='float64')
     # TODO remove the following three when finished debugging
     side_values = pd.Series(dtype='object')
     area_values = pd.Series(dtype='float64')
-    start_verts = pd.Series(dtype='float64')
+    index_values = pd.Series(dtype='int64')
     line_coords = [None] * len(list(cl_layer.at[0, 'geometry'].coords))
     for i in range(len(list(cl_layer.at[0, 'geometry'].coords)) - 1):
         line_coords[i] = shapely.Point(list(cl_layer.at[0, 'geometry'].coords)[i])
@@ -313,20 +370,26 @@ def assignMDValues(point_layer, cl_layer):
             temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
             # checks whether the projected point is equal to the start vertex
             if temp_line.project(p) == 0:
+                snapped = True
                 continue
             # checks whether the projected point is equal to the end vertex
             elif temp_line.project(p) == temp_line.project(line_coords[j + 1]):
+                snapped = True
                 continue
             # if neither of the above is true, we should be able to get a projected point
             else:
                 temp_m = temp_line.project(p)
-                temp_proj = temp_line.interpolate(temp_proj)
+                temp_proj = temp_line.interpolate(temp_m)
                 d_val = p.distance(temp_proj)
                 area = signedTriangleArea(temp_line, p)
+                snapped = False
+                ind = j
         # if we get to the end of the line segments without getting a projected point, just use the 
         # nearest vertex
-        if not 'd_val' in locals():
-            d_val, area = minAvgDist(line_coords, p)
+        if snapped == True:
+            d_val, ind = minAvgDist(line_coords, p)
+            temp_line = shapely.LineString([line_coords[ind], line_coords[ind + 1]])
+            area = signedTriangleArea(temp_line, p)
         m_val = cl_string.project(p)
         if area < 0:
             d_val = d_val * -1
@@ -335,23 +398,38 @@ def assignMDValues(point_layer, cl_layer):
             side = 'left'
         m_values = pd.concat([m_values, pd.Series(index=[i], data=[m_val])])
         d_values = pd.concat([d_values, pd.Series(index=[i], data=[d_val])])
+        # TODO remove the following three when finished debugging
         side_values = pd.concat([side_values, pd.Series(index = [i], data=[side])])
         area_values = pd.concat([area_values, pd.Series(index = [i], data=[area])])
-        start_verts = pd.concat([start_verts, pd.Series(index = [i], data=[start_vert])])
+        index_values = pd.concat([index_values, pd.Series(index = [i], data=[ind])])
         bar.update(i)
     point_layer['m_val'] = m_values
     point_layer['d_val'] = d_values
     # TODO remove the following three when finished debugging
     point_layer['side'] = side_values
     point_layer['area'] = area_values
-    point_layer['start_vert'] = start_verts
+    point_layer['ind'] = index_values
 
     return point_layer
 
-# TODO this function calculates the distance to the nearest vertex if no perpendicular projection
+# this function calculates the distance to the nearest vertex if no perpendicular projection
 # is available for that point (i.e., convex side of an intersection)
 def minAvgDist(line_coords, point):
-    pass
+    for i in range(len(line_coords) - 2):
+        test_pt_1 = line_coords[i]
+        test_pt_2 = line_coords[i + 1]
+        temp_dist_1 = point.distance(test_pt_1)
+        temp_dist_2 = point.distance(test_pt_2)
+        temp_avg_dist = (temp_dist_1 + temp_dist_2) / 2
+        if i == 0:
+            avg_dist = temp_avg_dist
+            dist = min(temp_dist_1, temp_dist_2)
+            index = i
+        if temp_avg_dist < avg_dist:
+            avg_dist = temp_avg_dist
+            dist = min(temp_dist_1, temp_dist_2)
+            index = i
+    return dist, index
 
 if __name__ == "__main__":
     main()
