@@ -191,24 +191,28 @@ def segmentBoxes(cl_list, mask_lyr):
     return box_list_left, box_list_right, sliver_list_left, sliver_list_right
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
-# TODO debug polygon search approach
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
-    point_list = [None] * len(grid_lyr)
+    point_list = [None] * len(grid_md_lyr)
     x_coords = [None] * len(grid_lyr)
     y_coords = [None] * len(grid_lyr)
+    m_coords = [None] * len(grid_md_lyr)
+    d_coords = [None] * len(grid_md_lyr)
     bar = progressbar.ProgressBar(min_value=0).start()
-    for index, row in grid_md_lyr.iterrows():
-        x_coords[index] = grid_lyr.at[index, 'geometry'].x
-        y_coords[index] = grid_lyr.at[index, 'geometry'].y
-        point_list[index] = row['geometry']
-    for i in range(len(point_list) - 1):
-        if shapely.is_empty(point_list[i]) == True:
+    for i in range(len(grid_lyr) - 1):
+        x_coords[i] = grid_lyr.at[i, 'geometry'].x
+        y_coords[i] = grid_lyr.at[i, 'geometry'].y
+    for l in range(len(grid_md_lyr) - 1):
+        m_coords[l] = grid_md_lyr.at[l, 'geometry'].x 
+        d_coords[l] = grid_md_lyr.at[l, 'geometry'].y
+        point_list[l] = grid_md_lyr.at[l, 'geometry']
+    for j in range(len(point_list) - 1):
+        if shapely.is_empty(point_list[j]) == True:
             continue
         # generate a polygon corresponding to the search radius specified
-        buff_coords = ((x_coords[index] - radius, y_coords[index] + (radius / 2)), 
-                       (x_coords[index] - radius, y_coords[index] - (radius / 2)), 
-                       (x_coords[index] + radius, y_coords[index] + (radius / 2)), 
-                       (x_coords[index] + radius, y_coords[index] - (radius / 2)))
+        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 10)), 
+                       (m_coords[j] - radius, d_coords[j] - (radius / 10)), 
+                       (m_coords[j] + radius, d_coords[j] - (radius / 10)), 
+                       (m_coords[j] + radius, d_coords[j] + (radius / 10)))
         buff = shapely.Polygon(buff_coords)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
@@ -217,22 +221,22 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         precise_matches = possible_matches[possible_matches.intersects(buff)]
         # if total matches less than specified minimum, expand search radius until criteria is met
         if len(precise_matches) < min_points:
-            j = 1
+            k = 1
             while len(precise_matches) < min_points:
-                new_rad = radius + (j * 5)
-                buff_coords = ((x_coords[index] - new_rad, y_coords[index] + (new_rad / 2)), 
-                               (x_coords[index] - new_rad, y_coords[index] - (new_rad / 2)), 
-                               (x_coords[index] + new_rad, y_coords[index] + (new_rad / 2)), 
-                               (x_coords[index] + new_rad, y_coords[index] - (new_rad / 2)))
+                new_rad = radius + (k * 5)
+                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 2)), 
+                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 2)), 
+                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 2)), 
+                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 2)))
                 buff = shapely.Polygon(buff_coords)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
                 precise_matches = possible_matches[possible_matches.intersects(buff)]
-                j += 1
+                k += 1
         # putting this here because I think this minimizes the number of duplicate operations...
         match_dist_dict = {}
         for index, row in precise_matches.iterrows():
-            match_dist_dict.update({row['geometry'].distance(point_list[i]) : index})
+            match_dist_dict.update({row['geometry'].distance(point_list[j]) : index})
         # this has to come second in case expanding the search radius above grabs a ton of points
         if len(match_dist_dict) > max_points:
             extra_rows = len(match_dist_dict) - max_points
@@ -259,8 +263,8 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             grid_z_val = 0.00
         else:
             grid_z_val = numerator / denominator
-        point_list[i] = shapely.Point(x_coords[i], y_coords[i], grid_z_val)
-        bar.update(i)
+        point_list[j] = shapely.Point(x_coords[j], y_coords[j], grid_z_val)
+        bar.update(j)
 
     grid_lyr = grid_lyr.set_geometry(point_list)
     return(grid_lyr)
