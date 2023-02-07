@@ -93,23 +93,22 @@ def main():
         sys.exit("mismatched layer CRS")
 
     # convert cl layer to single strings (if multistring), trim where it intersects mask layer
-    new_cl_lyr = cl_lyr.explode()
     cl_list = []
-    for i, row in new_cl_lyr.iterrows():
-        cl_list[i] = row.geometry
-    cl_list = clTrim(cl_list)
+    for i in range(len(cl_lyr.at[0, 'geometry'].coords) - 1):
+        coord = cl_lyr.at[0, 'geometry'].coords[i]
+        coord_2 = cl_lyr.at[0, 'geometry'].coords[i + 1]
+        line = shapely.LineString([coord, coord_2])
+        cl_list.append(line)
 
     # convert list back to a single multistring after trimming (for calculating m values)
     cl_feat = shapely.union_all([cl_list])
 
     #create bounding boxes for assigning side
-    boxes_left, boxes_right = segmentBoxes(cl_list, mask_lyr)
+    boxes_left, boxes_right, slivers_left, slivers_right = segmentBoxes(cl_list, mask_lyr)
 
     # calculate m value, d value for bathy layer, add to bathymetry layer fields
     print('\nassigning m, d values to bathymetry points')
-    assignMDValues(bathy_lyr, cl_lyr, boxes_left, boxes_right)
-    bathy_lyr.to_file('bathy_test3.shp')
-    sys.exit()
+    assignMDValues(bathy_lyr, cl_lyr, boxes_left, boxes_right, slivers_left, slivers_right)
 
     # get bounding box of mask layer - will clip later
     b_box = mask_lyr.total_bounds
@@ -135,7 +134,7 @@ def main():
 
     # calculate side, m value, d value for grid layer, add to grid layer fields
     print('\nassigning m, d values to grid points')
-    assignMDValues(new_grid_lyr, cl_lyr, boxes_left, boxes_right)
+    assignMDValues(new_grid_lyr, cl_lyr, boxes_left, boxes_right, slivers_left, slivers_right)
 
     # generate new bathy, grid layers with m, d coordinates
     print('\ngenerating new bathy, grid layers')
@@ -153,49 +152,46 @@ def main():
 # creates bounding boxes of each line segment extended to the extent of the mask layer, for identifying
 # which points go with which segment
 def segmentBoxes(cl_list, mask_lyr):
-    box_list_left = [None] * (len(cl_list) / 2)
-    box_list_right = [None] * (len(cl_list) / 2)
-    for i in range(len(cl_list) - 1):
+    box_list_left = [None] * len(cl_list)
+    box_list_right = [None] * len(cl_list)
+    sliver_list_left = []
+    sliver_list_right = []
+    poly = mask_lyr.at[0, 'geometry']
+    for i in range(len(cl_list)):
         j = 1 
         k = 1
         seg = cl_list[i]
         offset_left = seg.offset_curve(5)
         offset_right = seg.offset_curve(-5)
-        while shapely.contains(mask_lyr.at[0, 'geometry'], offset_left) == True:
-            offset_left = offset_left.offset_curve(j * 5)
-            j += 1
-            if shapely.intersects(mask_lyr.at[0, 'geometry'], offset_left) == True:
-                while shapely.intersects(mask_lyr.at[0, 'geometry'], offset_left) == True:
-                    offset_left = offset_left.offset_curve(j * 5)
-                    j += 1
+        if shapely.contains(poly, offset_left) == True or shapely.intersects(poly, offset_left) == True:
+            while shapely.contains(poly, offset_left) == True or shapely.intersects(poly, offset_left) == True:
+                offset_left = offset_left.offset_curve(j * 5)
+                j += 1
         poly_left = shapely.Polygon([seg.coords[0], seg.coords[1], offset_left.coords[1], offset_left.coords[0]])
         box_list_left[i] = poly_left
-        while shapely.contains(mask_lyr.at[0, 'geometry'], offset_right) == True:
-            offset_right = offset_right.offset_curve(k * -5)
-            k += 1
-            if shapely.intersects(mask_lyr.at[0, 'geometry'], offset_right) == True:
-                while shapely.intersects(mask_lyr.at[0, 'geometry'], offset_right) == True:
-                    offset_right = offset_right.offset_curve(k * -5)
-                    k += 1
+        if shapely.contains(poly, offset_right) == True or shapely.intersects(poly, offset_right) == True:
+            while shapely.contains(poly, offset_right) == True or shapely.intersects(poly, offset_right) == True:
+                offset_right = offset_right.offset_curve(k * -5)
+                k += 1
         poly_right = shapely.Polygon([seg.coords[0], seg.coords[1], offset_right.coords[1], offset_right.coords[0]])
         box_list_right[i] = poly_right
-    return box_list_left, box_list_right
-
-# trims CL segments to extents of mask layer
-def clTrim(cl_list, mask_lyr):
-    for i in range(len(cl_list) - 1):
-        seg = cl_list[i]
-        if shapely.crosses(mask_lyr.at[0, 'geometry'], seg) == True:
-            int_point = seg.intersection(mask_lyr.at[0, 'geometry'])
-            seg_1 = shapely.LineString(int_point, seg,coords[0])
-            seg_2 = shapely.LineString(int_point, seg.coords[1])
-            if shapely.contains(mask_lyr.at[0, 'geometry'], seg_1) == True:
-                cl_list[i] = seg_1
-            else:
-                cl_list[i] = seg_2
-    return cl_list
+    for l in range(len(cl_list) - 2):
+        if shapely.overlaps(box_list_left[l], box_list_left[l + 1]) == False:
+            sliver = shapely.Polygon([cl_list[l].coords[1],
+                                      box_list_left[l].exterior.coords[2],
+                                      box_list_left[l + 1].exterior.coords[3]
+                                      ])
+            sliver_list_left.append(sliver)
+        if shapely.overlaps(box_list_right[l], box_list_right[l + 1]) == False:
+            sliver = shapely.Polygon([cl_list[l].coords[1],
+                                      box_list_right[l].exterior.coords[2],
+                                      box_list_right[l + 1].exterior.coords[3],
+                                      ])
+            sliver_list_right.append(sliver)
+    return box_list_left, box_list_right, sliver_list_left, sliver_list_right
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
+# TODO debug polygon search approach
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
     point_list = [None] * len(grid_lyr)
     x_coords = [None] * len(grid_lyr)
@@ -209,7 +205,10 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         if shapely.is_empty(point_list[i]) == True:
             continue
         # generate a polygon corresponding to the search radius specified
-        buff_coords = ((x_coords[index] - radius, y_coords[index] + (radius / 2)), (x_coords[index] - radius, y_coords[index] - (radius / 2)), (x_coords[index] + radius, y_coords[index] + (radius / 2)), (x_coords[index] + radius, y_coords[index] - (radius / 2)))
+        buff_coords = ((x_coords[index] - radius, y_coords[index] + (radius / 2)), 
+                       (x_coords[index] - radius, y_coords[index] - (radius / 2)), 
+                       (x_coords[index] + radius, y_coords[index] + (radius / 2)), 
+                       (x_coords[index] + radius, y_coords[index] - (radius / 2)))
         buff = shapely.Polygon(buff_coords)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
@@ -221,7 +220,10 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             j = 1
             while len(precise_matches) < min_points:
                 new_rad = radius + (j * 5)
-                buff_coords = ((x_coords[index] - new_rad, y_coords[index] + (new_rad / 2)), (x_coords[index] - new_rad, y_coords[index] - (new_rad / 2)), (x_coords[index] + new_rad, y_coords[index] + (new_rad / 2)), (x_coords[index] + new_rad, y_coords[index] - (new_rad / 2)))
+                buff_coords = ((x_coords[index] - new_rad, y_coords[index] + (new_rad / 2)), 
+                               (x_coords[index] - new_rad, y_coords[index] - (new_rad / 2)), 
+                               (x_coords[index] + new_rad, y_coords[index] + (new_rad / 2)), 
+                               (x_coords[index] + new_rad, y_coords[index] - (new_rad / 2)))
                 buff = shapely.Polygon(buff_coords)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
@@ -351,14 +353,9 @@ def signedTriangleArea(test_line, test_point):
     return area
 # assigning m (distance along centerline) and d (distance to centerline) for each point in a layer
 # uses the signedTriangleArea formula above
-# TODO rewrite based on boxes approach
-def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right):
+def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right, slivers_left, slivers_right):
     m_values = pd.Series(dtype='float64')
     d_values = pd.Series(dtype='float64')
-    # TODO remove the following three when finished debugging
-    side_values = pd.Series(dtype='object')
-    area_values = pd.Series(dtype='float64')
-    index_values = pd.Series(dtype='int64')
     line_coords = [None] * len(list(cl_layer.at[0, 'geometry'].coords))
     for i in range(len(list(cl_layer.at[0, 'geometry'].coords)) - 1):
         line_coords[i] = shapely.Point(list(cl_layer.at[0, 'geometry'].coords)[i])
@@ -366,49 +363,73 @@ def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right):
     bar = progressbar.ProgressBar(min_value=0).start()
     for i in range(len(point_layer) - 1):
         p = shapely.Point(point_layer.at[i, 'geometry'])
-        for j in range(len(line_coords) - 2):
-            temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
-            # checks whether the projected point is equal to the start vertex
-            if temp_line.project(p) == 0:
-                snapped = True
-                continue
-            # checks whether the projected point is equal to the end vertex
-            elif temp_line.project(p) == temp_line.project(line_coords[j + 1]):
-                snapped = True
-                continue
-            # if neither of the above is true, we should be able to get a projected point
-            else:
+        found = False
+        for j in range(len(boxes_left) - 1):
+            if shapely.contains(boxes_left[j], p) == True and shapely.contains(boxes_left[j + 1], p) == False:
+                side = 'left'
+                temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
                 temp_m = temp_line.project(p)
                 temp_proj = temp_line.interpolate(temp_m)
                 d_val = p.distance(temp_proj)
-                area = signedTriangleArea(temp_line, p)
-                snapped = False
-                ind = j
-        # if we get to the end of the line segments without getting a projected point, just use the 
-        # nearest vertex
-        if snapped == True:
-            d_val, ind = minAvgDist(line_coords, p)
-            temp_line = shapely.LineString([line_coords[ind], line_coords[ind + 1]])
+                m_val = cl_string.project(p)
+                found == True
+            elif shapely.contains(boxes_left[j], p) == True and shapely.contains(boxes_left[j + 1], p) == True:
+                side == 'left'
+                d_val = p.distance(line_coords[j])
+                m_val = cl_string.project(line_coords[j])
+                found == True
+            else:
+                continue
+        if found == False:
+            for k in range(len(boxes_right) - 1):
+                if shapely.contains(boxes_right[k], p) == True and shapely.contains(boxes_right[k + 1], p) == False:
+                    side = 'right'
+                    temp_line = shapely.LineString([line_coords[k], line_coords[k + 1]])
+                    temp_m = temp_line.project(p)
+                    temp_proj = temp_line.interpolate(temp_m)
+                    d_val = p.distance(temp_proj) * -1 
+                    m_val = cl_string.project(p)
+                    found = True
+                elif shapely.contains(boxes_right[k], p) == True and shapely.contains(boxes_right[k + 1], p) == True:
+                    side = 'right'
+                    d_val = p.distance(line_coords[k]) * -1
+                    m_val = cl_string.project(line_coords[k])
+                    found = True
+                else:
+                    continue
+        if found == False:
+            for l in range(len(slivers_left) - 1):
+                if shapely.contains(slivers_left[l], p) == True:
+                    side = 'left'
+                    d_val = p.distance(shapely.Point(slivers_left[l].exterior.coords[0]))
+                    m_val = cl_string.project(shapely.Point(slivers_left[l].exterior.coords[0]))
+                    found = True
+        if found == False:
+            for m in range(len(slivers_right) - 1):
+                if shapely.contains(slivers_right[m], p) == True:
+                    side = 'right'
+                    d_val = p.distance(shapely.Point(slivers_right[m].exterior.coords[0])) * -1 
+                    m_val = cl_string.project(shapely.Point(slivers_right[m].exterior.coords[0]))
+                    found = True
+        if found == False:
+            avg_dist, index = minAvgDist(line_coords, p)
+            if p.distance(line_coords[index]) < p.distance(line_coords[index + 1]):
+                d_val = p.distance(line_coords[index])
+            else:
+                d_val = p.distance(line_coords[index + 1])
+            temp_line = shapely.LineString([line_coords[index], line_coords[index + 1]])
+            m_val = cl_string.project(line_coords[index])
             area = signedTriangleArea(temp_line, p)
-        m_val = cl_string.project(p)
-        if area < 0:
-            d_val = d_val * -1
-            side = 'right'
-        else:
-            side = 'left'
+            if area < 0:
+                d_val = d_val * -1
+                side = 'right'
+            else:
+                side = 'left'
         m_values = pd.concat([m_values, pd.Series(index=[i], data=[m_val])])
         d_values = pd.concat([d_values, pd.Series(index=[i], data=[d_val])])
-        # TODO remove the following three when finished debugging
-        side_values = pd.concat([side_values, pd.Series(index = [i], data=[side])])
-        area_values = pd.concat([area_values, pd.Series(index = [i], data=[area])])
-        index_values = pd.concat([index_values, pd.Series(index = [i], data=[ind])])
         bar.update(i)
     point_layer['m_val'] = m_values
     point_layer['d_val'] = d_values
-    # TODO remove the following three when finished debugging
-    point_layer['side'] = side_values
-    point_layer['area'] = area_values
-    point_layer['ind'] = index_values
 
     return point_layer
 
