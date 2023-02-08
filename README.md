@@ -34,6 +34,11 @@ output: name of the Shapefile to be exported</br>
 ## Notes
 Centerline must extend beyond the first/last points in the bathymetry layer for accurate results.</br>
 
+Currently the search area is actually a rectangle, defined as l = 2x(radius), w = radius/5; or in other
+words, a l/w ratio of 10. The idea is to bias toward points that are longitudinally similar (have similar d 
+values) over those that are latitudinally similar (have similar m values). For this reason the distance parameter
+in the actual IDW calculation, is also divided by 10.
+
 Mask layer will be used to clip grid points - no points will be generated outside mask. Works with polygons
 containing holes.</br>
 
