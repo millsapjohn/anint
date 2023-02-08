@@ -209,10 +209,10 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         if shapely.is_empty(point_list[j]) == True:
             continue
         # generate a polygon corresponding to the search radius specified
-        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 10)), 
-                       (m_coords[j] - radius, d_coords[j] - (radius / 10)), 
-                       (m_coords[j] + radius, d_coords[j] - (radius / 10)), 
-                       (m_coords[j] + radius, d_coords[j] + (radius / 10)))
+        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 50)), 
+                       (m_coords[j] - radius, d_coords[j] - (radius / 50)), 
+                       (m_coords[j] + radius, d_coords[j] - (radius / 50)), 
+                       (m_coords[j] + radius, d_coords[j] + (radius / 50)))
         buff = shapely.Polygon(buff_coords)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
@@ -224,10 +224,10 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             k = 1
             while len(precise_matches) < min_points:
                 new_rad = radius + (k * 5)
-                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 2)), 
-                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 2)), 
-                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 2)), 
-                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 2)))
+                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 50)), 
+                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 50)), 
+                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 50)), 
+                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 50)))
                 buff = shapely.Polygon(buff_coords)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
