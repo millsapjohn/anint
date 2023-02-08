@@ -154,6 +154,7 @@ def main():
 def segmentBoxes(cl_list, mask_lyr):
     box_list_left = [None] * len(cl_list)
     box_list_right = [None] * len(cl_list)
+    # slivers are the segments between bounding boxes at convex intersections - where the boxes do not overlap
     sliver_list_left = []
     sliver_list_right = []
     poly = mask_lyr.at[0, 'geometry']
@@ -163,6 +164,7 @@ def segmentBoxes(cl_list, mask_lyr):
         seg = cl_list[i]
         offset_left = seg.offset_curve(5)
         offset_right = seg.offset_curve(-5)
+        # continue offsetting line until it is no longer inside the mask boundary
         if shapely.contains(poly, offset_left) == True or shapely.intersects(poly, offset_left) == True:
             while shapely.contains(poly, offset_left) == True or shapely.intersects(poly, offset_left) == True:
                 offset_left = offset_left.offset_curve(j * 5)
@@ -176,19 +178,80 @@ def segmentBoxes(cl_list, mask_lyr):
         poly_right = shapely.Polygon([seg.coords[0], seg.coords[1], offset_right.coords[1], offset_right.coords[0]])
         box_list_right[i] = poly_right
     for l in range(len(cl_list) - 2):
+        # if the boxes do not intersect, create a sliver
         if shapely.overlaps(box_list_left[l], box_list_left[l + 1]) == False:
-            sliver = shapely.Polygon([cl_list[l].coords[1],
-                                      box_list_left[l].exterior.coords[2],
-                                      box_list_left[l + 1].exterior.coords[3]
-                                      ])
+            sliver = fillTriangle(box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
             sliver_list_left.append(sliver)
+        # if boxes do overlap, split the overlap in half(ish) and join to each box,
+        # giving each box half(ish) of the area. This should help with point distribution
+        elif shapely.overlaps(box_list_left[l], box_list_left[l + 1]) == True:
+            sliver = shapely.intersection(box_list_left[l], box_list_left[l + 1])
+            if len(sliver.exterior.coords) == 3:
+                box_list_left[l], box_list_left[l + 1] = splitTriangle(sliver, box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
+            else:
+                box_list_left[l], box_list_left[l + 1] = splitDiamond(sliver, box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
+        # repeating the above steps for boxes on the right side
         if shapely.overlaps(box_list_right[l], box_list_right[l + 1]) == False:
-            sliver = shapely.Polygon([cl_list[l].coords[1],
-                                      box_list_right[l].exterior.coords[2],
-                                      box_list_right[l + 1].exterior.coords[3],
-                                      ])
+            sliver = fillTriangle(box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
             sliver_list_right.append(sliver)
+        elif shapely.overlaps(box_list_right[l], box_list_right[l + 1]) == True:
+            sliver = shapely.intersection(box_list_right[l], box_list_right[l + 1])
+            if len(sliver.exterior.coords) == 3:
+                box_list_right[l], box_list_right[l + 1] = splitTriangle(sliver, box_list_right[l], box_list_right[l + 1], cl_list.coords[1])
+            else: box_list_right[l], box_list_right[l + 1] = splitDiamond(sliver, box_list_right[l], box_list_right[l + 1], cl_list[l].coords[1])
     return box_list_left, box_list_right, sliver_list_left, sliver_list_right
+
+# function to split overlapping polygons when shape of intersection is a triangle
+def splitTriangle(sliver, box_1, box_2, shared_coord):
+    # create buffers because Shapely doesn't like making comparisons between points... 
+    box_1_buff = shapely.buffer(box_1, 2)
+    box_2_buff = shapely.buffer(box_2, 2)
+    for coord in sliver.exterior.coords:
+        if box_1_buff.contains(shapely.Point(coord)) == True:
+            point_1 = coord
+        if box_2_buff.contains(shapely.Point(coord)) == True:
+            point_2 = coord
+    dist = point_1.distance(point_2)
+    temp_line = shapely.LineString([point_1, point_2])
+    new_point = temp_line.interpolate(dist / 2)
+    poly_1 = shapely.Polygon([(new_point.x, new_point.y), shared_coord, point_1])
+    poly_2 = shapely.Polygon([(new_point.x, new_point.y), shared_coord, point_2])
+    box_1 = shapely.difference([box_1, poly_2])
+    box_2 = shapely.difference([box_2, poly_1])
+
+    return box_1, box_2
+
+# function to split overlapping polygons when shape of intersection is a diamond
+def splitDiamond(sliver, box_1, box_2, shared_coord):
+    # determine which coords are in each box - poly_1 is the part that will be retained by box_1
+    # create buffers because shapely doesn't like making comparisons between points... 
+    box_1_buff = shapely.buffer(box_1, 2)
+    box_2_buff = shapely.buffer(box_2, 2)
+    shared_coord_buff = shapely.buffer(shapely.Point(shared_coord), 2)
+    for coord in sliver.exterior.coords:
+        if box_1_buff.contains(shapely.Point(coord)):
+            point_1 = coord
+        if box_2_buff.contains(shapely.Point(coord)):
+            point_2 = coord
+    for coord in sliver.exterior.coords:
+        if shared_coord_buff.contains(shapely.Point(shared_coord)) == False and coord != point_1 and coord != point_2:
+            point_3 = coord
+    poly_1 = shapely.Polygon([shared_coord, point_1, point_3])
+    poly_2 = shapely.Polygon([shared_coord, point_2, point_3])
+    box_1 = shapely.difference(box_1, poly_2)
+    box_2 = shapely.difference(box_2, poly_1)
+
+    return box_1, box_2
+
+# function to create a sliver to fill gaps between polygons
+# NOTE: this function works correctly because we know how the points were generated for the boxes. 
+# change at your own risk
+def fillTriangle(box_1, box_2, shared_coord):
+    sliver = shapely.Polygon([shared_coord,
+                              box_1.exterior.coords[2],
+                              box_2.exterior.coords[3]
+                              ])
+    return sliver
 
 # function to calculate the z value for grid points using inverse distance weighted method of m, d coordinates
 def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points, max_points, sindex):
@@ -209,10 +272,11 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         if shapely.is_empty(point_list[j]) == True:
             continue
         # generate a polygon corresponding to the search radius specified
-        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 50)), 
-                       (m_coords[j] - radius, d_coords[j] - (radius / 50)), 
-                       (m_coords[j] + radius, d_coords[j] - (radius / 50)), 
-                       (m_coords[j] + radius, d_coords[j] + (radius / 50)))
+        # biasing toward longitudinal points by a factor of 10 - this seems to work best
+        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 10)), 
+                       (m_coords[j] - radius, d_coords[j] - (radius / 10)), 
+                       (m_coords[j] + radius, d_coords[j] - (radius / 10)), 
+                       (m_coords[j] + radius, d_coords[j] + (radius / 10)))
         buff = shapely.Polygon(buff_coords)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
@@ -224,10 +288,10 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             k = 1
             while len(precise_matches) < min_points:
                 new_rad = radius + (k * 5)
-                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 50)), 
-                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 50)), 
-                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 50)), 
-                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 50)))
+                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 10)), 
+                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 10)), 
+                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 10)), 
+                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 10)))
                 buff = shapely.Polygon(buff_coords)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
@@ -368,8 +432,9 @@ def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right, slivers_left,
     for i in range(len(point_layer) - 1):
         p = shapely.Point(point_layer.at[i, 'geometry'])
         found = False
+        # start by checking the bounding boxes, which should take care of most of the points
         for j in range(len(boxes_left) - 1):
-            if shapely.contains(boxes_left[j], p) == True and shapely.contains(boxes_left[j + 1], p) == False:
+            if shapely.contains(boxes_left[j], p) == True:
                 side = 'left'
                 temp_line = shapely.LineString([line_coords[j], line_coords[j + 1]])
                 temp_m = temp_line.project(p)
@@ -377,13 +442,9 @@ def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right, slivers_left,
                 d_val = p.distance(temp_proj)
                 m_val = cl_string.project(p)
                 found == True
-            elif shapely.contains(boxes_left[j], p) == True and shapely.contains(boxes_left[j + 1], p) == True:
-                side == 'left'
-                d_val = p.distance(line_coords[j])
-                m_val = cl_string.project(line_coords[j])
-                found == True
             else:
                 continue
+        # continue checking conditions until a proper bounding polygon is found
         if found == False:
             for k in range(len(boxes_right) - 1):
                 if shapely.contains(boxes_right[k], p) == True and shapely.contains(boxes_right[k + 1], p) == False:
@@ -394,13 +455,9 @@ def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right, slivers_left,
                     d_val = p.distance(temp_proj) * -1 
                     m_val = cl_string.project(p)
                     found = True
-                elif shapely.contains(boxes_right[k], p) == True and shapely.contains(boxes_right[k + 1], p) == True:
-                    side = 'right'
-                    d_val = p.distance(line_coords[k]) * -1
-                    m_val = cl_string.project(line_coords[k])
-                    found = True
                 else:
                     continue
+        # if not in the bounding boxes, check the slivers
         if found == False:
             for l in range(len(slivers_left) - 1):
                 if shapely.contains(slivers_left[l], p) == True:
@@ -415,6 +472,7 @@ def assignMDValues(point_layer, cl_layer, boxes_left, boxes_right, slivers_left,
                     d_val = p.distance(shapely.Point(slivers_right[m].exterior.coords[0])) * -1 
                     m_val = cl_string.project(shapely.Point(slivers_right[m].exterior.coords[0]))
                     found = True
+        # if still not found, try the signed triangle area
         if found == False:
             avg_dist, index = minAvgDist(line_coords, p)
             if p.distance(line_coords[index]) < p.distance(line_coords[index + 1]):
