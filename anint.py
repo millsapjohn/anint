@@ -186,7 +186,7 @@ def segmentBoxes(cl_list, mask_lyr):
         # giving each box half(ish) of the area. This should help with point distribution
         elif shapely.overlaps(box_list_left[l], box_list_left[l + 1]) == True:
             sliver = shapely.intersection(box_list_left[l], box_list_left[l + 1])
-            if len(sliver.exterior.coords) == 3:
+            if len(sliver.exterior.coords) == 4:
                 box_list_left[l], box_list_left[l + 1] = splitTriangle(sliver, box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
             else:
                 box_list_left[l], box_list_left[l + 1] = splitDiamond(sliver, box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
@@ -196,28 +196,40 @@ def segmentBoxes(cl_list, mask_lyr):
             sliver_list_right.append(sliver)
         elif shapely.overlaps(box_list_right[l], box_list_right[l + 1]) == True:
             sliver = shapely.intersection(box_list_right[l], box_list_right[l + 1])
-            if len(sliver.exterior.coords) == 3:
-                box_list_right[l], box_list_right[l + 1] = splitTriangle(sliver, box_list_right[l], box_list_right[l + 1], cl_list.coords[1])
+            if len(sliver.exterior.coords) == 4:
+                box_list_right[l], box_list_right[l + 1] = splitTriangle(sliver, box_list_right[l], box_list_right[l + 1], cl_list[l].coords[1])
             else: box_list_right[l], box_list_right[l + 1] = splitDiamond(sliver, box_list_right[l], box_list_right[l + 1], cl_list[l].coords[1])
     return box_list_left, box_list_right, sliver_list_left, sliver_list_right
 
 # function to split overlapping polygons when shape of intersection is a triangle
 def splitTriangle(sliver, box_1, box_2, shared_coord):
     # create buffers because Shapely doesn't like making comparisons between points... 
-    box_1_buff = shapely.buffer(box_1, 2)
-    box_2_buff = shapely.buffer(box_2, 2)
+    point_1 = None
+    point_2 = None
+    shared_point = shapely.Point(shared_coord)
     for coord in sliver.exterior.coords:
-        if box_1_buff.contains(shapely.Point(coord)) == True:
+        if box_1.contains_properly(shapely.Point(coord)) == True:
             point_1 = coord
-        if box_2_buff.contains(shapely.Point(coord)) == True:
+        if box_2.contains_properly(shapely.Point(coord)) == True:
             point_2 = coord
-    dist = point_1.distance(point_2)
+    # if point 1 or point 2 wasn't found, the sliver point is at an intersection of two lines
+    if point_1 == None:
+        line_1 = shapely.LineString([box_1.exterior.coords[1], box_1.exterior.coords[2]])
+        line_2 = shapely.LineString([box_2.exterior.coords[0], box_2.exterior.coords[3]])
+        point_1 = line_1.intersection(line_2)
+    elif point_2 == None:
+        line_1 = shapely.LineString([box_1.exterior.coords[1], box_1.exterior.coords[2]])
+        line_2 = shapely.LineString([box_2.exterior.coords[0], box_2.exterior.coords[3]])
+        point_2 = line_1.intersection(line_2)
+    point_1 = shapely.Point(point_1)
+    point_2 = shapely.Point(point_2)
+    dist = point_1.distance(shapely.Point(point_2))
     temp_line = shapely.LineString([point_1, point_2])
     new_point = temp_line.interpolate(dist / 2)
-    poly_1 = shapely.Polygon([(new_point.x, new_point.y), shared_coord, point_1])
-    poly_2 = shapely.Polygon([(new_point.x, new_point.y), shared_coord, point_2])
-    box_1 = shapely.difference([box_1, poly_2])
-    box_2 = shapely.difference([box_2, poly_1])
+    poly_1 = shapely.Polygon([(new_point.x, new_point.y), (shared_point.x, shared_point.y), (point_1.x, point_1.y)])
+    poly_2 = shapely.Polygon([(new_point.x, new_point.y), (shared_point.x, shared_point.y), (point_2.x, point_2.y)])
+    box_1 = shapely.difference(box_1, poly_2)
+    box_2 = shapely.difference(box_2, poly_1)
 
     return box_1, box_2
 
@@ -225,19 +237,36 @@ def splitTriangle(sliver, box_1, box_2, shared_coord):
 def splitDiamond(sliver, box_1, box_2, shared_coord):
     # determine which coords are in each box - poly_1 is the part that will be retained by box_1
     # create buffers because shapely doesn't like making comparisons between points... 
-    box_1_buff = shapely.buffer(box_1, 2)
-    box_2_buff = shapely.buffer(box_2, 2)
-    shared_coord_buff = shapely.buffer(shapely.Point(shared_coord), 2)
+    point_1 = None
+    point_2 = None
+    shared_point = shapely.Point(shared_coord)
+    shared_coord_buff = shapely.buffer(shapely.Point(shared_coord), 0.1)
     for coord in sliver.exterior.coords:
-        if box_1_buff.contains(shapely.Point(coord)):
+        if box_1.contains_properly(shapely.Point(coord)) == True:
             point_1 = coord
-        if box_2_buff.contains(shapely.Point(coord)):
+        if box_2.contains_properly(shapely.Point(coord)) == True:
             point_2 = coord
+    # if point 1 or point 2 wasn't found, the sliver point is at an intersection of two lines
+    if point_1 == None:
+        line_1 = shapely.LineString([box_1.exterior.coords[1], box_1.exterior.coords[2]])
+        line_2 = shapely.LineString([box_2.exterior.coords[0], box_2.exterior.coords[3]])
+        point_1 = line_1.intersection(line_2)
+    elif point_2 == None:
+        line_1 = shapely.LineString([box_1.exterior.coords[1], box_1.exterior.coords[2]])
+        line_2 = shapely.LineString([box_2.exterior.coords[0], box_2.exterior.coords[3]])
+        point_2 = line_1.intersection(line_2)
+    point_1 = shapely.Point(point_1)
+    point_2 = shapely.Point(point_2)
+    point_1_buff = shapely.buffer(point_1, 0.1)
+    point_2_buff = shapely.buffer(point_2, 0.1)
     for coord in sliver.exterior.coords:
-        if shared_coord_buff.contains(shapely.Point(shared_coord)) == False and coord != point_1 and coord != point_2:
+        if (shared_coord_buff.contains(shapely.Point(coord)) == False
+        and point_1_buff.contains_properly(shapely.Point(coord)) == False
+        and point_2_buff.contains_properly(shapely.Point(coord)) == False):
             point_3 = coord
-    poly_1 = shapely.Polygon([shared_coord, point_1, point_3])
-    poly_2 = shapely.Polygon([shared_coord, point_2, point_3])
+    point_3 = shapely.Point(point_3)
+    poly_1 = shapely.Polygon([(shared_point.x, shared_point.y), (point_1.x, point_1.y), (point_3.x, point_3.y)])
+    poly_2 = shapely.Polygon([(shared_point.x, shared_point.y), (point_2.x, point_2.y), (point_3.x, point_3.y)])
     box_1 = shapely.difference(box_1, poly_2)
     box_2 = shapely.difference(box_2, poly_1)
 
