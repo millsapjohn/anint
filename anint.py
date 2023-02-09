@@ -21,7 +21,7 @@ of bathymetric points, generating a regularly-spaced grid.
 """
 
 __author__ = 'John Millsap'
-__date__ = '2023-02-03'
+__date__ = '2023-02-09'
 __copyright__ = '(C) 2023 by John Millsap'
 
 import sys
@@ -41,11 +41,11 @@ def main():
     parser.add_argument('bathy', type=fileCheck, help='Shapefile of existing bathymetry layer')
     parser.add_argument('mask', type=fileCheck, help='Shapefile of existing mask layer')
     parser.add_argument('cl', type=fileCheck, help='Shapefile of existing centerline layer')
-    parser.add_argument('space', type=float, help='desired grid spacing')
-    parser.add_argument('power', type=float, help='power to be used in IDW calculation')
-    parser.add_argument('radius', type=float, help='default search radius for nearby points')
-    parser.add_argument('min_points', type=int, help='minimum number of points to be used in IDW calculation')
-    parser.add_argument('max_points', type=int, help='maximum number of points to be used in IDW calculation')
+    parser.add_argument('space', type=numCheck, help='desired grid spacing')
+    parser.add_argument('power', type=numCheck, help='power to be used in IDW calculation')
+    parser.add_argument('radius', type=numCheck, help='default search radius for nearby points')
+    parser.add_argument('min_points', type=intCheck, help='minimum number of points to be used in IDW calculation')
+    parser.add_argument('max_points', type=intCheck, help='maximum number of points to be used in IDW calculation')
     parser.add_argument('output', type=fileCheck, help='output Shapefile')
     args = parser.parse_args()
     grid_space = args.space
@@ -54,6 +54,9 @@ def main():
     min_points = args.min_points
     max_points = args.max_points
     output = args.output
+
+    if max_points <= min_points:
+        sys.exit('max points must be greater than min points')
 
     # get data source and feature layer for bathymetry, mask (outline), and centerline
     print('loading layers')
@@ -92,16 +95,13 @@ def main():
     if bathy_crs_code != mask_crs_code or bathy_crs_code != cl_crs_code:
         sys.exit("mismatched layer CRS")
 
-    # convert cl layer to single strings (if multistring), trim where it intersects mask layer
+    # convert cl layer to single strings (if multistring)
     cl_list = []
     for i in range(len(cl_lyr.at[0, 'geometry'].coords) - 1):
         coord = cl_lyr.at[0, 'geometry'].coords[i]
         coord_2 = cl_lyr.at[0, 'geometry'].coords[i + 1]
         line = shapely.LineString([coord, coord_2])
         cl_list.append(line)
-
-    # convert list back to a single multistring after trimming (for calculating m values)
-    cl_feat = shapely.union_all([cl_list])
 
     #create bounding boxes for assigning side
     boxes_left, boxes_right, slivers_left, slivers_right = segmentBoxes(cl_list, mask_lyr)
@@ -398,6 +398,26 @@ def fileCheck(file):
     if ext != 'shp':
         parser.error('files must be of type Shapefile')
     return file
+
+# function to check for non-negative values
+def numCheck(arg):
+    try:
+        arg = float(arg)
+    except ValueError:
+        parser.error(f'{arg} is not numeric')
+    if arg < 1:
+        parser.error(f'{arg} is not greater than zero')
+    return arg
+
+# function for checking integers for non-negative values
+def intCheck(arg):
+    try:
+        arg = int(arg)
+    except ValueError:
+        parser.error(f'{arg} is not numeric')
+    if arg < 1:
+        parser.error(f'{arg} is not greater than zero')
+    return arg
 
 # more complex typechecking function for polygons. Polygons with holes come in as multilinestrings, which have to
 # be converted to a series of polygons. Geopandas' clip function doesn't handle holes correctly.
