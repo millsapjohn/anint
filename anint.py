@@ -26,6 +26,7 @@ __copyright__ = '(C) 2023 by John Millsap'
 
 import sys
 import os
+# import xml.etree.ElementTree as ET
 from collections import OrderedDict
 os.environ['USE_PYGEOS'] = '0'
 import geopandas as gpd
@@ -190,9 +191,8 @@ def segmentBoxes(cl_list, mask_lyr):
                 box_list_left[l], box_list_left[l + 1] = splitTriangle(sliver, box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
             else:
                 box_list_left[l], box_list_left[l + 1] = splitDiamond(sliver, box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
-        # repeating the above steps for boxes on the right side
         if shapely.overlaps(box_list_right[l], box_list_right[l + 1]) == False:
-            sliver = fillTriangle(box_list_left[l], box_list_left[l + 1], cl_list[l].coords[1])
+            sliver = fillTriangle(box_list_right[l], box_list_right[l + 1], cl_list[l].coords[1])
             sliver_list_right.append(sliver)
         elif shapely.overlaps(box_list_right[l], box_list_right[l + 1]) == True:
             sliver = shapely.intersection(box_list_right[l], box_list_right[l + 1])
@@ -234,6 +234,7 @@ def splitTriangle(sliver, box_1, box_2, shared_coord):
     return box_1, box_2
 
 # function to split overlapping polygons when shape of intersection is a diamond
+# TODO this is creating multipolygons instead of polygons - fix
 def splitDiamond(sliver, box_1, box_2, shared_coord):
     # determine which coords are in each box - poly_1 is the part that will be retained by box_1
     # create buffers because shapely doesn't like making comparisons between points... 
@@ -267,6 +268,9 @@ def splitDiamond(sliver, box_1, box_2, shared_coord):
     point_3 = shapely.Point(point_3)
     poly_1 = shapely.Polygon([(shared_point.x, shared_point.y), (point_1.x, point_1.y), (point_3.x, point_3.y)])
     poly_2 = shapely.Polygon([(shared_point.x, shared_point.y), (point_2.x, point_2.y), (point_3.x, point_3.y)])
+    # the problem lies in split diamonds extending outside the box. How to fix?
+    if box_1.contains_properly(poly_2) == False:
+        pass
     box_1 = shapely.difference(box_1, poly_2)
     box_2 = shapely.difference(box_2, poly_1)
 
@@ -302,10 +306,10 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
             continue
         # generate a polygon corresponding to the search radius specified
         # biasing toward longitudinal points by a factor of 10 - this seems to work best
-        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 10)), 
-                       (m_coords[j] - radius, d_coords[j] - (radius / 10)), 
-                       (m_coords[j] + radius, d_coords[j] - (radius / 10)), 
-                       (m_coords[j] + radius, d_coords[j] + (radius / 10)))
+        buff_coords = ((m_coords[j] - radius, d_coords[j] + (radius / 5)), 
+                       (m_coords[j] - radius, d_coords[j] - (radius / 5)), 
+                       (m_coords[j] + radius, d_coords[j] - (radius / 5)), 
+                       (m_coords[j] + radius, d_coords[j] + (radius / 5)))
         buff = shapely.Polygon(buff_coords)
         # rough estimate of possible matches based on spatial index
         possible_matches_index = list(sindex.intersection(buff.bounds))
@@ -316,11 +320,11 @@ def invDistWeight(grid_lyr, bathy_md_lyr, grid_md_lyr, power, radius, min_points
         if len(precise_matches) < min_points:
             k = 1
             while len(precise_matches) < min_points:
-                new_rad = radius + (k * 5)
-                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 10)), 
-                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 10)), 
-                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 10)), 
-                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 10)))
+                new_rad = radius + (k * 50)
+                buff_coords = ((m_coords[j] - new_rad, d_coords[j] + (new_rad / 5)), 
+                               (m_coords[j] - new_rad, d_coords[j] - (new_rad / 5)), 
+                               (m_coords[j] + new_rad, d_coords[j] - (new_rad / 5)), 
+                               (m_coords[j] + new_rad, d_coords[j] + (new_rad / 5)))
                 buff = shapely.Polygon(buff_coords)
                 possible_matches_index = list(sindex.intersection(buff.bounds))
                 possible_matches = bathy_md_lyr.iloc[possible_matches_index]
